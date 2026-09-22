@@ -249,7 +249,7 @@ function refreshLiveDiskState() {
   stopLiveDiskRefresh();
   if (!shellMounted || document.visibilityState !== 'visible') return;
   void initializeDisks()
-    .then(() => store.refreshSystemDisk())
+    .then(() => store.refreshDisks())
     .catch(error => store.reportError(error))
     .finally(scheduleLiveDiskRefresh);
 }
