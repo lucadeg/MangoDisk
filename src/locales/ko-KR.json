@@ -1805,6 +1805,8 @@
     "cleanableFound": "정리 가능 항목",
     "summaryCount": "정리 가능 항목 {count}개 발견",
     "summarySpace": "정리 가능 예상 데이터",
+    "scanLimitations": "검사 제한: 정리 규칙 {rules}개에서 항목 {count}개를 안전하게 건너뜀",
+    "scanRuleLimitations": "항목 {count}개를 안전하게 건너뜀",
     "emptyCleanTitle": "컴퓨터가 깨끗한 상태입니다",
     "emptyCleanDescription": "정리할 항목이 없습니다 — 계속 유지하세요",
     "selectedItemCount": "{count}개 항목 선택됨",

@@ -280,6 +280,7 @@ mod tests {
                 scan_rule("manual", RiskLevel::Safe, false, 90),
             ],
             application_icons: Vec::new(),
+            warning_counts_by_rule: std::collections::BTreeMap::new(),
             warning_count: 0,
             safe_bytes: 60,
             reclaimable_bytes: 230,

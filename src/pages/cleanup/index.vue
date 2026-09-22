@@ -114,6 +114,7 @@ const customDialogOpen = ref(false);
 const selectableDisks = ref<DiskInfo[]>([]);
 const selectedLeftoverIds = ref<string[]>([]);
 const scanRules = computed(() => props.scan?.rules ?? []);
+const scanWarningRuleCount = computed(() => Object.keys(props.scan?.warningCountsByRule ?? {}).length);
 const selectableRuleIds = computed(() => CleanupRuleSelectionUtils.selectableRuleIds(scanRules.value));
 const bulkSelectableRuleIds = computed(() => CleanupRuleSelectionUtils.bulkSelectableRuleIds(scanRules.value));
 const recommendedRuleIds = computed(() => CleanupRuleSelectionUtils.recommendedRuleIds(scanRules.value));
@@ -401,16 +402,26 @@ watch(
           :metric-label="t('cleanup.summarySpace')"
           :metric-value="ByteSizeService.bytes(totalFoundBytes)"
         >
-          <template v-if="scan.missingCustomRootCount" #actions>
-            <span class="text-content-secondary text-muted-foreground" role="status">
-              {{
-                t(
-                  'cleanup.customCleanup.missingDirectoriesSkipped',
-                  { count: scan.missingCustomRootCount },
-                  scan.missingCustomRootCount
-                )
-              }}
-            </span>
+          <template v-if="scan.missingCustomRootCount || scan.warningCount" #actions>
+            <div class="flex flex-wrap items-center justify-end gap-2" role="status">
+              <span v-if="scan.warningCount" class="text-content-secondary text-muted-foreground">
+                {{
+                  t('cleanup.scanLimitations', {
+                    count: FormatUtils.integer(scan.warningCount),
+                    rules: FormatUtils.integer(scanWarningRuleCount),
+                  })
+                }}
+              </span>
+              <span v-if="scan.missingCustomRootCount" class="text-content-secondary text-muted-foreground">
+                {{
+                  t(
+                    'cleanup.customCleanup.missingDirectoriesSkipped',
+                    { count: scan.missingCustomRootCount },
+                    scan.missingCustomRootCount
+                  )
+                }}
+              </span>
+            </div>
           </template>
         </MdResultSummary>
       </template>
@@ -435,6 +446,7 @@ watch(
         :selected-leftover-ids="selectedLeftoverIds"
         :selected-rule-ids="selectedRuleIds"
         :source-selections="sourceSelections"
+        :warning-counts-by-rule="scan.warningCountsByRule ?? {}"
         :privileged-scan-rule-id="privilegedScanRuleId"
         @toggle-source="toggleSource"
         @toggle-leftover="toggleLeftover"

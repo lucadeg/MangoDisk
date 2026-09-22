@@ -29,6 +29,9 @@ interface AppState {
   errorReason: CommandErrorReason | null;
 }
 
+const diskRefreshByStore = new WeakMap<object, Promise<boolean>>();
+const systemDiskRefreshByStore = new WeakMap<object, Promise<boolean>>();
+
 export const useAppStore = defineStore('app', {
   state: (): AppState => ({
     currentPage: PAGE_IDS.cleanup,
@@ -69,21 +72,48 @@ export const useAppStore = defineStore('app', {
       const index = this.disks.findIndex(item => item.mountPoint === disk.mountPoint);
       if (index >= 0) this.disks[index] = disk;
     },
+    async refreshDisks(): Promise<boolean> {
+      const pending = diskRefreshByStore.get(this);
+      if (pending) return pending;
+      const refresh = (async () => {
+        try {
+          const [disk, disks] = await Promise.all([DiskService.getSystemDisk(), DiskService.listDisks()]);
+          this.disk = disk;
+          this.disks = disks;
+          return true;
+        } catch (error) {
+          // Live refresh is observational. Preserve the last coherent snapshot
+          // rather than partially updating capacity or the volume inventory.
+          LoggerService.warn(LOG_DOMAINS.applicationShell, LOG_EVENTS.diskRefreshFailed, {
+            code: parseCommandError(error)?.code ?? 'operationFailed',
+          });
+          return false;
+        }
+      })().finally(() => diskRefreshByStore.delete(this));
+      diskRefreshByStore.set(this, refresh);
+      return refresh;
+    },
     async refreshSystemDisk(): Promise<boolean> {
-      try {
-        this.updateSystemDisk(await DiskService.getSystemDisk());
-        return true;
-      } catch (error) {
-        /*
-         * Capacity is a secondary view after a completed filesystem mutation.
-         * A refresh failure must not turn that completed operation into a user-
-         * visible failure, but the typed error code is retained for diagnosis.
-         */
-        LoggerService.warn(LOG_DOMAINS.applicationShell, LOG_EVENTS.diskRefreshFailed, {
-          code: parseCommandError(error)?.code ?? 'operationFailed',
-        });
-        return false;
-      }
+      const pending = systemDiskRefreshByStore.get(this);
+      if (pending) return pending;
+      const refresh = (async () => {
+        try {
+          this.updateSystemDisk(await DiskService.getSystemDisk());
+          return true;
+        } catch (error) {
+          /*
+           * Capacity is a secondary view after a completed filesystem mutation.
+           * A refresh failure must not turn that completed operation into a user-
+           * visible failure, but the typed error code is retained for diagnosis.
+           */
+          LoggerService.warn(LOG_DOMAINS.applicationShell, LOG_EVENTS.diskRefreshFailed, {
+            code: parseCommandError(error)?.code ?? 'operationFailed',
+          });
+          return false;
+        }
+      })().finally(() => systemDiskRefreshByStore.delete(this));
+      systemDiskRefreshByStore.set(this, refresh);
+      return refresh;
     },
     reportError(error: unknown) {
       const commandError = parseCommandError(error);

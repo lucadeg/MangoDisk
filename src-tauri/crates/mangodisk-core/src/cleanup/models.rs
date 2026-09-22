@@ -299,6 +299,10 @@ pub struct CleanupScanResult {
     pub disk: DiskInfo,
     pub rules: Vec<ScanRuleResult>,
     pub application_icons: Vec<CleanupApplicationIcon>,
+    /// Number of skipped or capability-limited items aggregated by cleanup rule.
+    /// The global warning count is the sum of these values, so adapters can
+    /// explain warnings without exposing a full private filesystem inventory.
+    pub warning_counts_by_rule: std::collections::BTreeMap<String, u64>,
     pub warning_count: u64,
     pub safe_bytes: u64,
     /// Aggregate logical/estimated bytes from selectable cleanup results, not a physical-volume

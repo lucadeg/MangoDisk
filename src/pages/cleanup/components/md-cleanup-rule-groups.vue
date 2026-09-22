@@ -63,10 +63,11 @@ const props = withDefaults(
     selectedLeftoverIds: string[];
     selectedRuleIds: string[];
     sourceSelections: CleanupSourceSelection[];
+    warningCountsByRule?: Record<string, number>;
     privilegedScanRuleId: string | null;
     embedded?: boolean;
   }>(),
-  { embedded: false }
+  { embedded: false, warningCountsByRule: () => ({}) }
 );
 const emit = defineEmits<{
   open: [path: string];
@@ -178,12 +179,18 @@ function selectedBytes(rule: PresentedScanRuleResult): number {
   return CleanupRuleSelectionUtils.selectedBytesForRule(rule, props.selectedRuleIds, props.sourceSelections);
 }
 
+function ruleWarningCount(ruleId: string): number {
+  return props.warningCountsByRule[ruleId] ?? 0;
+}
+
 function ruleValueDetail(
   rule: PresentedScanRuleResult,
   selection: 'all' | 'partial' | 'none',
   selectedRuleBytes: number
 ): string {
   if (rule.status === 'requiresElevation') return t('cleanup.privilegedScan.sizePending');
+  const warningCount = ruleWarningCount(rule.ruleId);
+  if (warningCount > 0) return t('cleanup.scanRuleLimitations', { count: FormatUtils.integer(warningCount) });
   if (selection === 'none') return t('cleanup.cleanableFound');
   if (selectedRuleBytes !== rule.bytes) return t('cleanup.totalSize', { size: ByteSizeService.bytes(rule.bytes) });
   return t('cleanup.selected');

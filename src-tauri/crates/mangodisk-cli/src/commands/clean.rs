@@ -499,6 +499,10 @@ mod tests {
                 limited_rule,
             ],
             application_icons: Vec::new(),
+            warning_counts_by_rule: std::collections::BTreeMap::from([(
+                "container.docker-build-cache".to_string(),
+                1,
+            )]),
             warning_count: 1,
             safe_bytes: 1_048_576,
             reclaimable_bytes: 2_097_152,
