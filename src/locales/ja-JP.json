@@ -1805,6 +1805,8 @@
     "cleanableFound": "削除可能な項目",
     "summaryCount": "削除可能な項目が {count} 件見つかりました | 削除可能な項目が {count} 件見つかりました",
     "summarySpace": "削除可能データ（推定）",
+    "scanLimitations": "スキャン制限: {rules} 個のクリーンアップルールで {count} 件を安全にスキップ",
+    "scanRuleLimitations": "{count} 件を安全にスキップ",
     "emptyCleanTitle": "パソコンはきれいな状態です",
     "emptyCleanDescription": "削除できる項目は見つかりませんでした。この状態を保ちましょう",
     "selectedItemCount": "{count} 項目を選択中 | {count} 項目を選択中",

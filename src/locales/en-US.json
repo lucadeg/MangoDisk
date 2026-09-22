@@ -1805,6 +1805,8 @@
     "cleanableFound": "Cleanable items",
     "summaryCount": "Found {count} cleanable item | Found {count} cleanable items",
     "summarySpace": "estimated cleanable data",
+    "scanLimitations": "Scan limits: {count} entries safely skipped across {rules} cleanup rules",
+    "scanRuleLimitations": "{count} entries safely skipped",
     "emptyCleanTitle": "Your computer is looking clean",
     "emptyCleanDescription": "No cleanable items found — keep it up",
     "selectedItemCount": "{count} item selected | {count} items selected",

@@ -49,7 +49,7 @@ const MAX_CLEANUP_SOURCE_DETAILS: usize = 256;
 // unbounded in-memory filesystem index. Overflow fails closed and marks the
 // rule limited instead of authorizing directories that were not retained.
 const MAX_EMPTY_DIRECTORY_AUTHORIZATIONS_PER_RULE: usize = 4_096;
-const CLEANUP_SCAN_SCHEMA_VERSION: &str = "1.9";
+const CLEANUP_SCAN_SCHEMA_VERSION: &str = "1.10";
 
 pub struct CleanupScanService;
 
@@ -404,11 +404,20 @@ impl CleanupScanService {
                 )
             })
             .collect::<HashMap<_, _>>();
-        let warning_count = measured_rules
+        let mut warning_counts_by_rule = plan
+            .rules
             .iter()
-            .map(|measured| measured.skipped_count)
-            .sum::<u64>()
-            .saturating_add(cleaner_warning_count);
+            .zip(measured_rules.iter())
+            .filter_map(|(rule, measured)| {
+                (measured.skipped_count > 0).then(|| (rule.id.clone(), measured.skipped_count))
+            })
+            .collect::<BTreeMap<_, _>>();
+        for rule in &cleaner_rules {
+            if rule.status == ScanItemStatus::Limited {
+                warning_counts_by_rule.insert(rule.rule_id.clone(), 1);
+            }
+        }
+        let warning_count = warning_counts_by_rule.values().copied().sum::<u64>();
         let mut rules = plan
             .rules
             .into_iter()
@@ -548,6 +557,7 @@ impl CleanupScanService {
             disk,
             rules,
             application_icons,
+            warning_counts_by_rule,
             warning_count,
             safe_bytes,
             reclaimable_bytes,
@@ -1000,7 +1010,9 @@ fn measure_root_task(
                     );
                 }
                 log::debug!(
-                    "cleanup_directory_aggregate_finished strategy={} file_count={} bytes={} skipped_count={}",
+                    "cleanup_directory_aggregate_finished rule_id={} root={} strategy={} file_count={} bytes={} skipped_count={}",
+                    rules[rule_index].id,
+                    display_path(path),
                     aggregate.strategy,
                     aggregate.file_count,
                     aggregate.bytes,

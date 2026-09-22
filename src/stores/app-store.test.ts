@@ -56,6 +56,24 @@ describe('app store disk refresh', () => {
     expect(getSystemDisk).toHaveBeenCalledTimes(2);
   });
 
+  it('coalesces overlapping native disk refreshes', async () => {
+    let resolveDisk!: (disk: DiskInfo) => void;
+    const pendingDisk = new Promise<DiskInfo>(resolve => {
+      resolveDisk = resolve;
+    });
+    const getSystemDisk = vi.spyOn(DiskService, 'getSystemDisk').mockReturnValue(pendingDisk);
+    const store = useAppStore();
+
+    const first = store.refreshSystemDisk();
+    const second = store.refreshSystemDisk();
+
+    expect(getSystemDisk).toHaveBeenCalledOnce();
+    resolveDisk({ ...currentDisk, availableBytes: 800, usedBytes: 200 });
+    await expect(Promise.all([first, second])).resolves.toEqual([true, true]);
+    expect(store.disk?.availableBytes).toBe(800);
+    expect(getSystemDisk).toHaveBeenCalledOnce();
+  });
+
   it('keeps the previous snapshot when a secondary refresh fails', async () => {
     vi.spyOn(DiskService, 'getSystemDisk').mockRejectedValue(new Error('disk refresh failed'));
     const warn = vi.spyOn(LoggerService, 'warn').mockImplementation(() => undefined);

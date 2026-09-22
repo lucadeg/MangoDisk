@@ -1805,6 +1805,8 @@
     "cleanableFound": "发现可清理",
     "summaryCount": "发现 {count} 项可清理内容",
     "summarySpace": "估算可清理",
+    "scanLimitations": "扫描限制：已安全跳过 {count} 个条目，涉及 {rules} 条清理规则",
+    "scanRuleLimitations": "已安全跳过 {count} 个条目",
     "emptyCleanTitle": "你的电脑很干净",
     "emptyCleanDescription": "暂时没有发现可清理内容，继续保持",
     "selectedItemCount": "已选择 {count} 项",

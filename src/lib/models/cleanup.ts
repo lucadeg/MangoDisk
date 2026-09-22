@@ -158,6 +158,8 @@ export interface CleanupScanResult {
   disk: DiskInfo;
   rules: ScanRuleResult[];
   applicationIcons: CleanupApplicationIcon[];
+  /** Added in scan schema 1.10 so aggregate warnings can be traced to their owning rule. */
+  warningCountsByRule?: Record<string, number>;
   warningCount: number;
   safeBytes: number;
   reclaimableBytes: number;

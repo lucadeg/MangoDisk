@@ -1805,6 +1805,8 @@
     "cleanableFound": "可清理項目",
     "summaryCount": "發現 {count} 項可清理內容",
     "summarySpace": "估算可清理",
+    "scanLimitations": "掃描限制：已安全略過 {count} 個項目，涉及 {rules} 條清理規則",
+    "scanRuleLimitations": "已安全略過 {count} 個項目",
     "emptyCleanTitle": "你的電腦很乾淨",
     "emptyCleanDescription": "暫時沒有找到可清理內容，繼續保持",
     "selectedItemCount": "已選取 {count} 項",

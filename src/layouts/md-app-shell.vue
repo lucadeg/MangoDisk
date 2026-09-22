@@ -133,6 +133,7 @@ const UPDATE_CHECK_ERROR_TOAST_ID = 'app-update-check-error';
 const LARGE_FILE_DELETE_TOAST_ID = 'large-file-delete-result';
 const DUPLICATE_FILE_DELETE_TOAST_ID = 'duplicate-file-delete-result';
 const DEEP_CLEANUP_TOAST_ID = 'deep-cleanup-result';
+const LIVE_DISK_REFRESH_INTERVAL_MS = 2_000;
 const customCleanupRuleNames = computed<Record<string, string>>(() =>
   cleanupStore.scanScope.mode === CLEANUP_SCAN_SCOPE_MODES.custom
     ? Object.fromEntries(cleanupStore.scanScope.rules.map(rule => [`custom.${rule.id}`, rule.name]))
@@ -226,10 +227,36 @@ let unlistenResident: (() => void) | null = null;
 let unlistenOpenAbout: (() => void) | null = null;
 let shellMounted = true;
 let stopUpdateNotice: (() => void) | undefined;
+let liveDiskRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 
 function initializeDisks(): Promise<void> {
   diskInitialization ??= store.initialize().then(() => storageScopeStore.initialize(store.disks));
   return diskInitialization;
+}
+
+function stopLiveDiskRefresh() {
+  if (liveDiskRefreshTimer !== undefined) globalThis.clearTimeout(liveDiskRefreshTimer);
+  liveDiskRefreshTimer = undefined;
+}
+
+function scheduleLiveDiskRefresh() {
+  stopLiveDiskRefresh();
+  if (!shellMounted || document.visibilityState !== 'visible') return;
+  liveDiskRefreshTimer = globalThis.setTimeout(refreshLiveDiskState, LIVE_DISK_REFRESH_INTERVAL_MS);
+}
+
+function refreshLiveDiskState() {
+  stopLiveDiskRefresh();
+  if (!shellMounted || document.visibilityState !== 'visible') return;
+  void initializeDisks()
+    .then(() => store.refreshSystemDisk())
+    .catch(error => store.reportError(error))
+    .finally(scheduleLiveDiskRefresh);
+}
+
+function handleVisibilityChange() {
+  if (document.visibilityState === 'visible') refreshLiveDiskState();
+  else stopLiveDiskRefresh();
 }
 
 function initializePageData(page: PageId): Promise<void> {
@@ -270,9 +297,12 @@ function toggleSidebar() {
 
 onMounted(() => {
   window.addEventListener('resize', syncSidebarExpansion);
+  window.addEventListener('focus', refreshLiveDiskState);
+  document.addEventListener('visibilitychange', handleVisibilityChange);
   syncSidebarExpansion();
   cleanupStore.initialize();
   preloadFeaturePages();
+  refreshLiveDiskState();
   void appUpdateStore.initialize();
   // Every window reads the same native result. Acquiring a download handle
   // from a completed check does not issue another network request.
@@ -337,6 +367,9 @@ async function connectWindowNavigation() {
 onBeforeUnmount(() => {
   shellMounted = false;
   window.removeEventListener('resize', syncSidebarExpansion);
+  window.removeEventListener('focus', refreshLiveDiskState);
+  document.removeEventListener('visibilitychange', handleVisibilityChange);
+  stopLiveDiskRefresh();
   stopUpdateNotice?.();
   unlistenOpenAbout?.();
   unlistenResident?.();
@@ -510,6 +543,7 @@ async function openDuplicateFileEntry(scanId: number, path: string) {
 async function scanCleanup(scanScope: CleanupScanScope) {
   cleanupOrchestrating.value = true;
   try {
+    await store.refreshSystemDisk();
     const completed = await cleanupStore.scanCandidates(scanScope);
     if (!completed) return;
     if (CleanupScanScopeUtils.includesStandardCleanup(scanScope)) {
