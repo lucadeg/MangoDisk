@@ -69,4 +69,31 @@ describe('app store disk refresh', () => {
       code: 'operationFailed',
     });
   });
+  it('refreshes system capacity and the complete disk inventory together', async () => {
+    const refreshedDisk = { ...currentDisk, availableBytes: 750, usedBytes: 250 };
+    const externalDisk = { ...currentDisk, name: 'External', mountPoint: '/Volumes/External' };
+    vi.spyOn(DiskService, 'getSystemDisk').mockResolvedValue(refreshedDisk);
+    vi.spyOn(DiskService, 'listDisks').mockResolvedValue([refreshedDisk, externalDisk]);
+    const store = useAppStore();
+
+    await expect(store.refreshDisks()).resolves.toBe(true);
+
+    expect(store.disk).toEqual(refreshedDisk);
+    expect(store.disks).toEqual([refreshedDisk, externalDisk]);
+  });
+
+  it('preserves the last good inventory when a live inventory refresh fails', async () => {
+    vi.spyOn(DiskService, 'getSystemDisk').mockResolvedValue(currentDisk);
+    vi.spyOn(DiskService, 'listDisks').mockRejectedValue(new Error('inventory unavailable'));
+    vi.spyOn(LoggerService, 'warn').mockImplementation(() => undefined);
+    const store = useAppStore();
+    store.disk = currentDisk;
+    store.disks = [currentDisk];
+
+    await expect(store.refreshDisks()).resolves.toBe(false);
+
+    expect(store.disk).toEqual(currentDisk);
+    expect(store.disks).toEqual([currentDisk]);
+  });
+
 });
