@@ -626,11 +626,19 @@ pub(super) fn delete_root_contents_with_progress(
         stats.failed_item_count += 1;
         return;
     }
-    if validate_cleanup_directory(root, canonical_root).is_err() {
+    if let Err(error) = validate_cleanup_directory(root, canonical_root) {
+        record_cleanup_failure(root, "validate_directory", &error, stats);
         stats.failed_item_count += 1;
         return;
     }
-    let Ok(entries) = fs::read_dir(root) else {
+    // The rule-declared root is intentionally kept on the strict failure path:
+    // an unreadable root means the whole rule produced nothing, which is a
+    // user-visible outcome. Descendant entries use the more permissive
+    // permission-aware recording below because they were also skipped during
+    // measurement and never entered the preview totals.
+    let Ok(entries) = fs::read_dir(root)
+        .inspect_err(|error| record_cleanup_failure(root, "read_directory", error, stats))
+    else {
         stats.failed_item_count += 1;
         return;
     };
@@ -648,7 +656,9 @@ pub(super) fn delete_root_contents_with_progress(
             stats.failed_item_count += 1;
             break;
         }
-        let Ok(entry) = entry else {
+        let Ok(entry) =
+            entry.inspect_err(|error| record_cleanup_failure(root, "read_entry", error, stats))
+        else {
             stats.failed_item_count += 1;
             continue;
         };
@@ -686,11 +696,18 @@ fn delete_entry(
         .parent()
         .is_some_and(|parent| revalidate_cleanup_directory(parent, canonical_parent))
     {
+        record_cleanup_failure(
+            path,
+            "revalidate_parent",
+            &"directory identity changed",
+            stats,
+        );
         stats.failed_item_count += 1;
         return false;
     }
-    let Ok(initial_metadata) = fs::symlink_metadata(path) else {
-        stats.failed_item_count += 1;
+    let Ok(initial_metadata) = fs::symlink_metadata(path)
+        .inspect_err(|error| record_unreachable_entry(path, "inspect_entry", error, stats))
+    else {
         return false;
     };
     if is_link_like(&initial_metadata) {
@@ -704,16 +721,20 @@ fn delete_entry(
             Some(traversal.matcher),
         ) && (traversal.owns_path)(path, &initial_metadata)
         {
+            record_cleanup_failure(path, "validate_entry", &"selected entry is a link", stats);
             stats.failed_item_count += 1;
         }
         return false;
     }
-    let Ok(prepared) = prepare_path_for_permanent_delete(path) else {
+    let Ok(prepared) = prepare_path_for_permanent_delete(path)
+        .inspect_err(|error| record_cleanup_failure(path, "prepare_delete", error, stats))
+    else {
         stats.failed_item_count += 1;
         return false;
     };
     let metadata = prepared.metadata();
     if is_link_like(metadata) {
+        record_cleanup_failure(path, "validate_entry", &"prepared entry is a link", stats);
         stats.failed_item_count += 1;
         return false;
     }
@@ -738,7 +759,9 @@ fn delete_entry(
             stats.failed_item_count += 1;
             return false;
         }
-        let Ok(verified) = fs::symlink_metadata(path) else {
+        let Ok(verified) = fs::symlink_metadata(path)
+            .inspect_err(|error| record_cleanup_failure(path, "inspect_entry", error, stats))
+        else {
             stats.failed_item_count += 1;
             return false;
         };
@@ -760,6 +783,7 @@ fn delete_entry(
                 true
             }
             Err(error) => {
+                record_cleanup_failure(path, "delete_file", &error, stats);
                 stats.deleted_bytes = stats.deleted_bytes.saturating_add(error.released_bytes());
                 stats.affected_item_count = stats
                     .affected_item_count
@@ -797,7 +821,9 @@ fn delete_entry(
                     diagnostic_path(path),
                     mangodisk_platform::diagnostics::text(&error)
                 );
-                let Ok(prepared) = prepare_path_for_permanent_delete(path) else {
+                let Ok(prepared) = prepare_path_for_permanent_delete(path).inspect_err(|error| {
+                    record_cleanup_failure(path, "prepare_delete", error, stats)
+                }) else {
                     stats.failed_item_count = stats.failed_item_count.saturating_add(1);
                     return false;
                 };
@@ -816,24 +842,33 @@ fn delete_entry(
     let canonical_directory = match validate_cleanup_directory(path, traversal.canonical_root) {
         Ok(path) => path,
         Err(error) => {
-            log::debug!(
-                "cleanup_directory_validation_failed path={} error={}",
-                diagnostic_path(path),
-                error
-            );
+            record_cleanup_failure(path, "validate_directory", &error, stats);
             stats.failed_item_count += 1;
             return false;
         }
     };
     if canonical_directory.parent() != Some(canonical_parent) {
+        record_cleanup_failure(
+            path,
+            "revalidate_parent",
+            &"canonical parent changed",
+            stats,
+        );
         stats.failed_item_count += 1;
         return false;
     }
-    let Ok(entries) = fs::read_dir(path) else {
-        stats.failed_item_count += 1;
+    let Ok(entries) = fs::read_dir(path)
+        .inspect_err(|error| record_unreachable_entry(path, "read_directory", error, stats))
+    else {
         return false;
     };
     if !revalidate_cleanup_directory(path, &canonical_directory) {
+        record_cleanup_failure(
+            path,
+            "revalidate_directory",
+            &"directory identity changed",
+            stats,
+        );
         stats.failed_item_count += 1;
         return false;
     }
@@ -845,7 +880,9 @@ fn delete_entry(
             return false;
         }
         had_entry = true;
-        let Ok(entry) = entry else {
+        let Ok(entry) =
+            entry.inspect_err(|error| record_cleanup_failure(path, "read_entry", error, stats))
+        else {
             stats.failed_item_count += 1;
             all_removed = false;
             continue;
@@ -867,7 +904,11 @@ fn delete_entry(
     let should_remove = all_removed && (had_entry || authorized_empty_directory);
     if should_remove {
         if !revalidate_cleanup_directory(path, &canonical_directory)
-            || delete_empty_directory_permanently(prepared).is_err()
+            || delete_empty_directory_permanently(prepared)
+                .inspect_err(|error| {
+                    record_cleanup_failure(path, "delete_empty_directory", error, stats)
+                })
+                .is_err()
         {
             stats.failed_item_count = stats.failed_item_count.saturating_add(1);
             all_removed = false;
@@ -885,6 +926,7 @@ fn record_bulk_delete_error(
     is_cancelled: &(dyn Fn() -> bool + Sync),
     stats: &mut DeleteStats,
 ) {
+    record_cleanup_failure(restored_path, "delete_directory", error, stats);
     // Cancellation must remain responsive; only failure paths perform the
     // additional traversal needed to account for a restored remainder.
     let remaining = if error.remaining_was_restored() && !is_cancelled() {
@@ -908,6 +950,43 @@ fn record_bulk_delete_error(
         .affected_item_count
         .saturating_add(error.affected_item_count());
     stats.failed_item_count = stats.failed_item_count.saturating_add(1);
+}
+
+/// Bound repeated failures per rule while preserving the first useful native diagnostics.
+fn record_cleanup_failure(
+    path: &Path,
+    stage: &str,
+    error: &dyn std::fmt::Display,
+    stats: &mut DeleteStats,
+) {
+    if stats.logged_failure_count < 20 {
+        log::warn!(
+            "cleanup_item_failed path={} stage={stage} outcome=skipped error={}",
+            diagnostic_path(path),
+            mangodisk_platform::diagnostics::text(error)
+        );
+    } else if stats.logged_failure_count == 20 {
+        log::warn!("cleanup_item_failures_suppressed additional_failures=true");
+    }
+    stats.logged_failure_count = stats.logged_failure_count.saturating_add(1);
+}
+
+/// Permission-protected system entries (for example SIP-guarded sandbox
+/// containers under the Darwin user cache) reject stat and enumeration in the
+/// delete traversal exactly as they did during measurement, so their content
+/// never entered the preview's expected totals. Counting them as failures
+/// would report a mismatch the user cannot resolve; only genuine I/O errors
+/// increment the failure count while the diagnostic log is preserved.
+fn record_unreachable_entry(
+    path: &Path,
+    stage: &str,
+    error: &std::io::Error,
+    stats: &mut DeleteStats,
+) {
+    record_cleanup_failure(path, stage, error, stats);
+    if error.kind() != std::io::ErrorKind::PermissionDenied {
+        stats.failed_item_count += 1;
+    }
 }
 
 fn validate_cleanup_directory(path: &Path, canonical_root: &Path) -> Result<PathBuf, String> {
@@ -947,6 +1026,12 @@ pub(super) struct DeleteStats {
     pub(super) affected_item_count: u64,
     pub(super) failed_item_count: u64,
     pub(super) removed_empty_directory_count: u64,
+    /// Counts every diagnostic entry emitted for this rule independently of
+    /// the user-visible failure count. Permission-protected entries log a
+    /// diagnostic without incrementing `failed_item_count`, so the suppression
+    /// limit must not key off that counter or a directory full of unreadable
+    /// entries would bypass it entirely.
+    pub(super) logged_failure_count: u64,
 }
 
 #[cfg(test)]
@@ -958,6 +1043,47 @@ mod bulk_cleanup_tests {
 
     use super::*;
     use crate::filesystem::permanent_delete::physical_path_identity_snapshot;
+
+    #[test]
+    fn permission_denied_entries_log_without_counting_as_failures() {
+        let mut stats = DeleteStats::default();
+        let permission_error = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let io_error = std::io::Error::from(std::io::ErrorKind::NotFound);
+
+        record_unreachable_entry(
+            Path::new("/fixture/protected"),
+            "inspect_entry",
+            &permission_error,
+            &mut stats,
+        );
+        assert_eq!(stats.failed_item_count, 0);
+        assert_eq!(stats.logged_failure_count, 1);
+
+        record_unreachable_entry(
+            Path::new("/fixture/missing"),
+            "inspect_entry",
+            &io_error,
+            &mut stats,
+        );
+        assert_eq!(stats.failed_item_count, 1);
+        assert_eq!(stats.logged_failure_count, 2);
+    }
+
+    #[test]
+    fn failure_diagnostics_are_bounded_independently_of_failure_counting() {
+        let mut stats = DeleteStats::default();
+        let permission_error = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+
+        // Repeated permission-protected entries never increment the failure
+        // count, yet the diagnostic suppression limit must still engage.
+        for index in 0..25 {
+            let path = PathBuf::from(format!("/fixture/protected-{index}"));
+            record_unreachable_entry(&path, "inspect_entry", &permission_error, &mut stats);
+        }
+
+        assert_eq!(stats.failed_item_count, 0);
+        assert_eq!(stats.logged_failure_count, 25);
+    }
 
     struct TestDirectory(PathBuf);
 

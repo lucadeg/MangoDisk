@@ -485,6 +485,7 @@ mod cleanup_matcher_tests {
                     affected_item_count: 1,
                     failed_item_count: 0,
                     removed_empty_directory_count: 0,
+            logged_failure_count: 0,
                 },
             );
             reporter.record_action(&action);
@@ -1239,6 +1240,7 @@ mod cleanup_matcher_tests {
             affected_item_count: 0,
             failed_item_count: 0,
             removed_empty_directory_count: 0,
+            logged_failure_count: 0,
         };
         let mut item_progress = Vec::new();
 
@@ -1367,6 +1369,7 @@ mod cleanup_matcher_tests {
             affected_item_count: 0,
             failed_item_count: 0,
             removed_empty_directory_count: 0,
+            logged_failure_count: 0,
         };
 
         delete_root_contents(
@@ -1431,6 +1434,7 @@ mod cleanup_matcher_tests {
             affected_item_count: 0,
             failed_item_count: 0,
             removed_empty_directory_count: 0,
+            logged_failure_count: 0,
         };
         delete_root_contents(
             &parent_root,
@@ -1463,6 +1467,7 @@ mod cleanup_matcher_tests {
             affected_item_count: 0,
             failed_item_count: 0,
             removed_empty_directory_count: 0,
+            logged_failure_count: 0,
         };
         delete_root_contents(
             &child_root,

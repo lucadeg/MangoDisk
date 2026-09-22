@@ -2939,7 +2939,7 @@
       },
       "app.wechat-diagnostic-cache": {
         "name": "WeChat 로그 및 임시 캐시",
-        "description": "Weixin 및 WeChat이 생성한 진단 로그와 소량의 임시 표시 데이터입니다.",
+        "description": "WeChat이 생성한 진단 로그와 임시 표시 데이터입니다. macOS에서는 수정된 지 7일이 지난 로그 파일만 정리합니다.",
         "impact": "메시지, 계정, 플러그인, 사용자 파일은 유지됩니다. 정리 전에 WeChat을 닫으세요."
       },
       "browser.chrome-cache": {

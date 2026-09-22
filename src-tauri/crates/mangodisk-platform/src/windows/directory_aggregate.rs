@@ -1,5 +1,5 @@
 use std::{
-    ffi::{c_void, OsString},
+    ffi::{c_void, OsStr, OsString},
     fs, io,
     os::windows::{
         ffi::{OsStrExt, OsStringExt},
@@ -54,6 +54,8 @@ struct AggregateCollection<'a> {
     large_fetch_enabled: bool,
     count_link_metadata: bool,
     is_cancelled: &'a (dyn Fn() -> bool + Sync),
+    flag_entry_name: fn(&OsStr) -> bool,
+    first_flagged_entry: Option<String>,
 }
 
 impl AggregateCollection<'_> {
@@ -87,6 +89,7 @@ pub(super) fn measure(
     count_link_metadata: bool,
     is_cancelled: &(dyn Fn() -> bool + Sync),
     report_progress: &(dyn Fn(&Path, u64, u64) + Sync),
+    flag_entry_name: fn(&OsStr) -> bool,
 ) -> Result<DirectoryTreeAggregate, DirectoryTreeAggregateError> {
     if is_cancelled() {
         return Err(DirectoryTreeAggregateError::Cancelled);
@@ -133,6 +136,8 @@ pub(super) fn measure(
         large_fetch_enabled: true,
         count_link_metadata,
         is_cancelled,
+        flag_entry_name,
+        first_flagged_entry: None,
     };
 
     while let Some(directory) = collection.pending.pop() {
@@ -188,6 +193,7 @@ pub(super) fn measure(
         } else {
             "win32-find-resident-files-v2"
         },
+        flagged_entry: collection.first_flagged_entry,
     })
 }
 
@@ -369,6 +375,12 @@ fn collect_entry(
     if name == "." || name == ".." {
         return;
     }
+    // The name check runs before the placeholder and reparse branches so an
+    // authored entry is flagged even when its attributes alone would count it
+    // as skipped; the caller's fail-closed decision only needs the name.
+    if (collection.flag_entry_name)(&name) && collection.first_flagged_entry.is_none() {
+        collection.first_flagged_entry = Some(name.to_string_lossy().into_owned());
+    }
 
     if is_remote_placeholder_attributes(data.dwFileAttributes) {
         // Remote-only entries never contribute local reclaimable bytes. This check precedes the
@@ -484,8 +496,8 @@ mod tests {
         fs::write(nested.join("deep/grandchild.bin"), [0_u8; 6])
             .expect("grandchild fixture must be written");
 
-        let aggregate =
-            measure(&root, false, &|| false, &|_, _, _| {}).expect("native aggregate must succeed");
+        let aggregate = measure(&root, false, &|| false, &|_, _, _| {}, |_| false)
+            .expect("native aggregate must succeed");
 
         assert_eq!(aggregate.bytes, 15);
         assert_eq!(aggregate.file_count, 3);
@@ -507,8 +519,8 @@ mod tests {
         fs::write(root.join("alpha/deep/grandchild.bin"), [0_u8; 11])
             .expect("grandchild fixture must be written");
 
-        let native =
-            measure(&root, false, &|| false, &|_, _, _| {}).expect("native aggregate must succeed");
+        let native = measure(&root, false, &|| false, &|_, _, _| {}, |_| false)
+            .expect("native aggregate must succeed");
         let reference = reference_directory_tree_aggregate(&root);
 
         assert_eq!(
@@ -532,8 +544,8 @@ mod tests {
             return;
         }
 
-        let aggregate =
-            measure(&root, false, &|| false, &|_, _, _| {}).expect("native aggregate must succeed");
+        let aggregate = measure(&root, false, &|| false, &|_, _, _| {}, |_| false)
+            .expect("native aggregate must succeed");
 
         assert_eq!((aggregate.bytes, aggregate.file_count), (7, 1));
         assert_eq!(aggregate.skipped_count, 1);
@@ -552,8 +564,8 @@ mod tests {
             .expect("link metadata must be readable")
             .file_size();
 
-        let aggregate =
-            measure(&root, true, &|| false, &|_, _, _| {}).expect("native aggregate must succeed");
+        let aggregate = measure(&root, true, &|| false, &|_, _, _| {}, |_| false)
+            .expect("native aggregate must succeed");
 
         assert_eq!(aggregate.bytes, 7 + link_bytes);
         assert_eq!(aggregate.file_count, 2);
@@ -561,11 +573,27 @@ mod tests {
     }
 
     #[test]
+    fn project_artifact_aggregate_flags_authored_entries_without_pruning_them() {
+        let (root, _cleanup) = fixture_root("project-flagged");
+        fs::create_dir_all(root.join("debug/.git")).expect("nested git fixture must be created");
+        fs::write(root.join("debug/.git/index"), [0_u8; 3])
+            .expect("nested git content must be created");
+        fs::write(root.join("debug.bin"), [0_u8; 4]).expect("fixture file must be written");
+
+        let aggregate = measure(&root, true, &|| false, &|_, _, _| {}, |name| name == ".git")
+            .expect("native aggregate must succeed");
+
+        assert_eq!(aggregate.flagged_entry.as_deref(), Some(".git"));
+        assert_eq!(aggregate.file_count, 2);
+        assert_eq!(aggregate.bytes, 7);
+    }
+
+    #[test]
     fn native_aggregate_honors_cancellation_before_enumeration() {
         let (root, _cleanup) = fixture_root("cancel");
 
         assert!(matches!(
-            measure(&root, false, &|| true, &|_, _, _| {}),
+            measure(&root, false, &|| true, &|_, _, _| {}, |_| false),
             Err(DirectoryTreeAggregateError::Cancelled)
         ));
     }
@@ -598,6 +626,8 @@ mod tests {
             large_fetch_enabled: true,
             count_link_metadata: true,
             is_cancelled: &|| false,
+            flag_entry_name: |_| false,
+            first_flagged_entry: None,
         };
 
         collect_entry(&root, &directory, &data, &mut collection);
@@ -645,7 +675,7 @@ mod tests {
         ));
         assert!(!missing.exists(), "missing root fixture must not exist");
 
-        let error = measure(&missing, false, &|| false, &|_, _, _| {})
+        let error = measure(&missing, false, &|| false, &|_, _, _| {}, |_| false)
             .expect_err("a missing root must reject native aggregation");
         let detail = match error {
             DirectoryTreeAggregateError::Platform(detail) => detail,

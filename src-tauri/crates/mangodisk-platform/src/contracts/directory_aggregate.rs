@@ -28,6 +28,10 @@ pub struct DirectoryTreeAggregate {
     pub skipped_count: u64,
     pub sources: Vec<DirectoryTreeSourceAggregate>,
     pub strategy: &'static str,
+    /// First entry whose name matched the caller's authored-content predicate during the same
+    /// traversal, if a predicate was supplied and a match was observed. The name is recorded so
+    /// cleanup callers can refuse the artifact without walking the tree a second time.
+    pub flagged_entry: Option<String>,
 }
 
 /// Physical directories discovered directly below one root.
@@ -190,6 +194,7 @@ pub(crate) fn reference_directory_tree_aggregate(root: &std::path::Path) -> Dire
         skipped_count,
         sources,
         strategy: "test-reference-walker",
+        flagged_entry: None,
     }
 }
 

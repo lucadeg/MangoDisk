@@ -581,7 +581,8 @@ impl Platform for WindowsPlatform {
         is_cancelled: &(dyn Fn() -> bool + Sync),
         report_progress: &(dyn Fn(&Path, u64, u64) + Sync),
     ) -> Result<Option<DirectoryTreeAggregate>, DirectoryTreeAggregateError> {
-        directory_aggregate::measure(root, false, is_cancelled, report_progress).map(Some)
+        directory_aggregate::measure(root, false, is_cancelled, report_progress, |_| false)
+            .map(Some)
     }
 
     fn fast_project_artifact_tree_aggregate(
@@ -589,8 +590,10 @@ impl Platform for WindowsPlatform {
         root: &Path,
         is_cancelled: &(dyn Fn() -> bool + Sync),
         report_progress: &(dyn Fn(&Path, u64, u64) + Sync),
+        flag_entry_name: fn(&std::ffi::OsStr) -> bool,
     ) -> Result<Option<DirectoryTreeAggregate>, DirectoryTreeAggregateError> {
-        directory_aggregate::measure(root, true, is_cancelled, report_progress).map(Some)
+        directory_aggregate::measure(root, true, is_cancelled, report_progress, flag_entry_name)
+            .map(Some)
     }
 
     fn fast_direct_physical_directories(

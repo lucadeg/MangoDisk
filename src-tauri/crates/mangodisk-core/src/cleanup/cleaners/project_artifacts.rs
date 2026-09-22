@@ -135,6 +135,7 @@ struct CleanupSourceSummary {
 struct ArtifactMeasurement {
     measured: MeasureResult,
     modified_at_ms: Option<u64>,
+    authored_entry: Option<String>,
 }
 
 #[derive(Debug)]
@@ -337,7 +338,7 @@ pub(super) fn count() -> usize {
 
 pub(super) fn catalog_digest() -> String {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"mangodisk-project-artifact-catalog-v3-codex-worktrees");
+    hasher.update(b"mangodisk-project-artifact-catalog-v4-authored-content");
     for (name, source) in EMBEDDED_PROJECT_ARTIFACT_RULE_SOURCES {
         hasher.update(name.as_bytes());
         hasher.update(source.as_bytes());
@@ -552,21 +553,9 @@ fn execute_rule_with_process_check(
             );
             continue;
         }
-        let live = measure_directory(&candidate.path, &|| {
-            operation.cancelled().load(Ordering::Relaxed)
-        });
-        if live.measured.skipped_count > 0 {
-            failed_item_count = failed_item_count.saturating_add(1);
-            log::warn!(
-                "project_artifact_delete_skipped rule_id={} path={} reason=incompleteMeasurement skipped_count={}",
-                rule.source.id,
-                diagnostic_path(&candidate.path),
-                live.measured.skipped_count
-            );
-            continue;
-        }
-        // Revalidate provenance and writers after measurement, immediately
-        // before deletion. A stale preview cannot authorize an active checkout.
+        // Revalidate provenance and writers before the final tree measurement. Keeping the
+        // authored-entry inspection inside that last traversal minimizes the interval in which
+        // a writer could create a protected file before permanent deletion.
         if let Some(checkout) = &candidate.codex_checkout {
             if !codex_worktrees::is_linked_checkout(checkout) {
                 failed_item_count = failed_item_count.saturating_add(1);
@@ -606,6 +595,31 @@ fn execute_rule_with_process_check(
                     continue;
                 }
             }
+        }
+        let live = measure_directory(&candidate.path, &|| {
+            operation.cancelled().load(Ordering::Relaxed)
+        });
+        if let Err(error) = validate_artifact_protection(&candidate.path, &live, &|| {
+            operation.cancelled().load(Ordering::Relaxed)
+        }) {
+            failed_item_count += 1;
+            preflight_failed_count += 1;
+            log::warn!(
+                "project_artifact_delete_skipped operation_id={} rule_id={} path={} reason=authoredContentOrUnknown error={}",
+                operation.id(), rule.source.id, diagnostic_path(&candidate.path),
+                mangodisk_platform::diagnostics::text(&error)
+            );
+            continue;
+        }
+        if live.measured.skipped_count > 0 {
+            failed_item_count = failed_item_count.saturating_add(1);
+            log::warn!(
+                "project_artifact_delete_skipped rule_id={} path={} reason=incompleteMeasurement skipped_count={}",
+                rule.source.id,
+                diagnostic_path(&candidate.path),
+                live.measured.skipped_count
+            );
+            continue;
         }
         match delete_path_permanently(prepared, live.measured.bytes, live.measured.file_count) {
             Ok(()) => {
@@ -2171,12 +2185,23 @@ fn measure_artifacts(
                 if index >= drafts.len() || is_cancelled() {
                     break;
                 }
-                let measured = measure_directory_with_progress(
+                let mut measured = measure_directory_with_progress(
                     &drafts[index].path,
                     is_cancelled,
                     report_path,
                     report_files,
                 );
+                if let Err(error) =
+                    validate_artifact_protection(&drafts[index].path, &measured, is_cancelled)
+                {
+                    measured.measured.skipped_count =
+                        measured.measured.skipped_count.saturating_add(1);
+                    log::warn!(
+                        "project_artifact_preview_limited path={} reason=authoredContentOrUnknown error={}",
+                        diagnostic_path(&drafts[index].path),
+                        mangodisk_platform::diagnostics::text(&error)
+                    );
+                }
                 if let Ok(mut values) = results.lock() {
                     values[index] = Some(measured);
                 } else {
@@ -2201,6 +2226,7 @@ fn measure_artifacts(
                         skipped_count: 1,
                     },
                     modified_at_ms: None,
+                    authored_entry: None,
                 }),
             )
         })
@@ -2226,6 +2252,7 @@ fn measure_directory_with_progress(
         root,
         is_cancelled,
         &native_progress,
+        super::project_artifact_protection::is_authored_entry_name,
     ) {
         Ok(Some(aggregate)) => {
             report_files(root, aggregate.file_count, aggregate.bytes);
@@ -2248,6 +2275,7 @@ fn measure_directory_with_progress(
                     skipped_count: aggregate.skipped_count,
                 },
                 modified_at_ms,
+                authored_entry: aggregate.flagged_entry,
             };
         }
         Ok(None) => {}
@@ -2259,6 +2287,7 @@ fn measure_directory_with_progress(
                     skipped_count: 1,
                 },
                 modified_at_ms: None,
+                authored_entry: None,
             };
         }
         Err(DirectoryTreeAggregateError::Platform(error)) => {
@@ -2329,7 +2358,21 @@ fn portable_measure_directory_with_progress(
                 Ok(entries) => {
                     for entry in entries {
                         match entry {
-                            Ok(entry) => stack.push(entry.path()),
+                            Ok(entry) => {
+                                let name = entry.file_name();
+                                if result.authored_entry.is_none()
+                                    && super::project_artifact_protection::is_authored_entry_name(
+                                        &name,
+                                    )
+                                {
+                                    result.authored_entry =
+                                        Some(name.to_string_lossy().into_owned());
+                                }
+                                // Continue measuring the protected entry and its descendants.
+                                // Preview keeps an accurate estimate even though the candidate is
+                                // fail-closed and cannot enter execution.
+                                stack.push(entry.path());
+                            }
                             Err(_) => {
                                 result.measured.skipped_count =
                                     result.measured.skipped_count.saturating_add(1)
@@ -2355,6 +2398,24 @@ fn portable_measure_directory_with_progress(
         );
     }
     result
+}
+
+fn validate_artifact_protection(
+    root: &Path,
+    measurement: &ArtifactMeasurement,
+    is_cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<(), String> {
+    if let Some(entry) = &measurement.authored_entry {
+        return Err(format!(
+            "artifact contains protected authored entry: {entry}"
+        ));
+    }
+    // An incomplete traversal is already fail-closed by `measurement_limited`. Avoid launching
+    // Git when the filesystem result cannot authorize deletion regardless of repository state.
+    if measurement.measured.skipped_count > 0 {
+        return Ok(());
+    }
+    super::project_artifact_protection::validate_ownership(root, is_cancelled)
 }
 
 fn artifact_prune_names(rules: &[ProjectArtifactRuleSource]) -> HashSet<String> {

@@ -11,11 +11,268 @@ use crate::{
 
 static NEXT_FIXTURE_ID: AtomicU64 = AtomicU64::new(1);
 
+pub(super) fn initialize_git_admin(admin: &Path) {
+    fs::create_dir_all(admin.join("objects")).unwrap();
+    fs::create_dir_all(admin.join("refs/heads")).unwrap();
+    fs::write(admin.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+}
+
+#[test]
+fn stale_artifact_plan_preserves_a_new_program_key() {
+    let _lock = test_operation_lock();
+    let fixture = Fixture::new("authored-race");
+    let project = fixture.0.join("project");
+    fs::create_dir_all(project.join("target/deploy")).unwrap();
+    fs::write(project.join("Cargo.toml"), "[package]\nname='fixture'\n").unwrap();
+    fs::write(project.join("target/output"), [1; 64]).unwrap();
+    let plan = build_plan(
+        &[display_path(&project)],
+        false,
+        current_platform_rules().unwrap(),
+        &|| false,
+    )
+    .unwrap();
+    let rule = plan
+        .rules
+        .iter()
+        .find(|rule| rule.source.id == "project.rust-build-artifacts")
+        .unwrap();
+    assert!(!rule.candidates[0].measurement_limited);
+    let key = project.join("target/deploy/program-keypair.json");
+    fs::write(&key, b"not a real key").unwrap();
+    let operation = OperationGuard::start(CoordinatedOperationKind::Cleanup).unwrap();
+    let action = execute_rule(rule, None, false, &operation);
+    assert_eq!(
+        action.reason_code,
+        Some(CleanupActionReason::PreflightFailed)
+    );
+    assert_eq!(action.released_bytes, 0);
+    assert_eq!(fs::read(&key).unwrap(), b"not a real key");
+    assert!(project.join("target/output").exists());
+    operation.complete();
+}
+
+#[test]
+fn authored_entry_keeps_preview_visible_but_limited() {
+    let fixture = Fixture::new("authored-preview");
+    let project = fixture.0.join("project");
+    fs::create_dir_all(project.join("target/deploy")).unwrap();
+    fs::write(project.join("Cargo.toml"), "[package]\nname='fixture'\n").unwrap();
+    fs::write(project.join("target/output"), [1; 64]).unwrap();
+    fs::write(
+        project.join("target/deploy/program-keypair.json"),
+        b"not a real key",
+    )
+    .unwrap();
+
+    let plan = build_plan(
+        &[display_path(&project)],
+        false,
+        current_platform_rules().unwrap(),
+        &|| false,
+    )
+    .unwrap();
+    let rule = plan
+        .rules
+        .iter()
+        .find(|rule| rule.source.id == "project.rust-build-artifacts")
+        .unwrap();
+
+    assert_eq!(rule.candidates.len(), 1);
+    assert!(rule.candidates[0].measurement_limited);
+    assert_eq!(rule.candidates[0].file_count, 2);
+    assert!(rule.candidates[0].bytes >= 64);
+}
+
+#[test]
+fn portable_measurement_flags_authored_entries_without_pruning_totals() {
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().join("target");
+    fs::create_dir_all(root.join("debug/.git")).unwrap();
+    fs::create_dir_all(root.join("deploy")).unwrap();
+    fs::write(root.join("debug/.git/index"), [0_u8; 3]).unwrap();
+    fs::write(root.join("debug.bin"), [0_u8; 4]).unwrap();
+    fs::write(root.join("deploy/program-keypair.json"), [0_u8; 5]).unwrap();
+
+    let measured =
+        portable_measure_directory_with_progress(&root, &|| false, &|_| {}, &|_, _, _| {});
+
+    assert_eq!(measured.measured.file_count, 3);
+    assert_eq!(measured.measured.bytes, 12);
+    assert_eq!(measured.measured.skipped_count, 0);
+    assert!(measured.authored_entry.is_some());
+    assert!(validate_artifact_protection(&root, &measured, &|| false).is_err());
+}
+
+#[test]
+#[ignore = "generates 5000 disposable build files to measure ownership inspection overhead"]
+fn artifact_content_protection_workload() {
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().join("target");
+    for directory in 0..50 {
+        let directory = root.join(directory.to_string());
+        fs::create_dir_all(&directory).unwrap();
+        for index in 0..100 {
+            fs::write(directory.join(format!("{index}.o")), [1; 256]).unwrap();
+        }
+    }
+    // Warm every path before sampling so the comparison measures traversal overhead rather than
+    // whichever variant happens to populate the filesystem cache first.
+    measure_without_authored_entry_check(&root);
+    measure_with_legacy_content_walk(&root);
+    measure_with_integrated_content_check(&root);
+
+    let mut baseline = Vec::new();
+    let mut legacy = Vec::new();
+    let mut optimized = Vec::new();
+    for run in 0..15 {
+        // Rotate order to avoid giving one implementation a systematic cache advantage.
+        match run % 3 {
+            0 => {
+                baseline.push(timed_us(|| measure_without_authored_entry_check(&root)));
+                legacy.push(timed_us(|| measure_with_legacy_content_walk(&root)));
+                optimized.push(timed_us(|| measure_with_integrated_content_check(&root)));
+            }
+            1 => {
+                optimized.push(timed_us(|| measure_with_integrated_content_check(&root)));
+                baseline.push(timed_us(|| measure_without_authored_entry_check(&root)));
+                legacy.push(timed_us(|| measure_with_legacy_content_walk(&root)));
+            }
+            _ => {
+                legacy.push(timed_us(|| measure_with_legacy_content_walk(&root)));
+                optimized.push(timed_us(|| measure_with_integrated_content_check(&root)));
+                baseline.push(timed_us(|| measure_without_authored_entry_check(&root)));
+            }
+        }
+    }
+    println!(
+        "artifact_protection_workload files=5000 bytes=1280000 runs=15 baseline_p50_us={} baseline_p95_us={} legacy_p50_us={} legacy_p95_us={} optimized_p50_us={} optimized_p95_us={}",
+        percentile(&mut baseline, 50),
+        percentile(&mut baseline, 95),
+        percentile(&mut legacy, 50),
+        percentile(&mut legacy, 95),
+        percentile(&mut optimized, 50),
+        percentile(&mut optimized, 95)
+    );
+
+    let git = std::process::Command::new("git")
+        .arg("-C")
+        .arg(fixture.path())
+        .args(["init", "--quiet"])
+        .output()
+        .unwrap();
+    assert!(git.status.success());
+    measure_with_legacy_content_walk(&root);
+    measure_with_integrated_content_check(&root);
+    let mut git_legacy = Vec::new();
+    let mut git_optimized = Vec::new();
+    for run in 0..15 {
+        if run % 2 == 0 {
+            git_legacy.push(timed_us(|| measure_with_legacy_content_walk(&root)));
+            git_optimized.push(timed_us(|| measure_with_integrated_content_check(&root)));
+        } else {
+            git_optimized.push(timed_us(|| measure_with_integrated_content_check(&root)));
+            git_legacy.push(timed_us(|| measure_with_legacy_content_walk(&root)));
+        }
+    }
+    println!(
+        "artifact_protection_git_workload files=5000 runs=15 legacy_p50_us={} legacy_p95_us={} optimized_p50_us={} optimized_p95_us={}",
+        percentile(&mut git_legacy, 50),
+        percentile(&mut git_legacy, 95),
+        percentile(&mut git_optimized, 50),
+        percentile(&mut git_optimized, 95)
+    );
+}
+
+#[test]
+#[ignore = "generates 505000 disposable files to verify that content protection has no entry cap"]
+fn artifact_content_protection_large_tree_workload() {
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().join("target");
+    for directory in 0..1010 {
+        let directory = root.join(directory.to_string());
+        fs::create_dir_all(&directory).unwrap();
+        for index in 0..500 {
+            fs::write(directory.join(format!("{index}.o")), []).unwrap();
+        }
+    }
+
+    let started = Instant::now();
+    let measured = measure_directory(&root, &|| false);
+    validate_artifact_protection(&root, &measured, &|| false).unwrap();
+    let elapsed = started.elapsed();
+    assert_eq!(measured.measured.file_count, 505_000);
+    assert_eq!(measured.measured.skipped_count, 0);
+    assert!(measured.authored_entry.is_none());
+    println!(
+        "artifact_protection_large_tree files=505000 elapsed_ms={}",
+        elapsed.as_millis()
+    );
+}
+
+fn timed_us(action: impl FnOnce()) -> u128 {
+    let started = Instant::now();
+    action();
+    started.elapsed().as_micros()
+}
+
+fn percentile(samples: &mut [u128], percentile: usize) -> u128 {
+    samples.sort_unstable();
+    let index = samples.len().saturating_mul(percentile).saturating_sub(1) / 100;
+    samples[index.min(samples.len().saturating_sub(1))]
+}
+
+fn measure_without_authored_entry_check(root: &Path) {
+    let aggregate = current_platform()
+        .fast_project_artifact_tree_aggregate(root, &|| false, &|_, _, _| {}, |_| false)
+        .unwrap()
+        .expect("macOS and Windows provide a native project-artifact aggregate");
+    assert_eq!(aggregate.file_count, 5000);
+    assert_eq!(aggregate.bytes, 5000 * 256);
+}
+
+fn measure_with_legacy_content_walk(root: &Path) {
+    measure_without_authored_entry_check(root);
+    legacy_validate_authored_entry_names(root).unwrap();
+    super::super::project_artifact_protection::validate_ownership(root, &|| false).unwrap();
+}
+
+fn measure_with_integrated_content_check(root: &Path) {
+    let measured = measure_directory(root, &|| false);
+    validate_artifact_protection(root, &measured, &|| false).unwrap();
+    assert_eq!(measured.measured.file_count, 5000);
+    assert_eq!(measured.measured.bytes, 5000 * 256);
+}
+
+/// Models the removed protection pass for a stable before/after workload. It deliberately calls
+/// `symlink_metadata` for every entry because that extra per-path lookup was the dominant cost of
+/// the old implementation compared with the native aggregate.
+fn legacy_validate_authored_entry_names(root: &Path) -> Result<(), String> {
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(path) = stack.pop() {
+        let metadata = fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+        if path != root
+            && path
+                .file_name()
+                .is_some_and(super::super::project_artifact_protection::is_authored_entry_name)
+        {
+            return Err("artifact contains protected authored content".to_string());
+        }
+        if metadata.is_dir() && !is_link_like(&metadata) {
+            for entry in fs::read_dir(&path).map_err(|error| error.to_string())? {
+                stack.push(entry.map_err(|error| error.to_string())?.path());
+            }
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn codex_worktree_artifacts_use_regular_project_rules_and_preserve_durable_data() {
     let fixture = Fixture::new("codex-artifacts");
     let checkout = fixture.0.join("worktrees/1234/project");
     let admin = fixture.0.join("repository/.git/worktrees/project");
+    initialize_git_admin(&admin);
     fs::create_dir_all(checkout.join("target")).unwrap();
     fs::create_dir_all(&admin).unwrap();
     fs::write(
@@ -111,6 +368,7 @@ fn codex_discovery_failure_and_rebuilt_plans_preserve_automatic_source_protectio
     let fixture = Fixture::new("codex-discovery-failure");
     let checkout = fixture.0.join("worktrees/1234/project");
     let admin = fixture.0.join("repository/.git/worktrees/project");
+    initialize_git_admin(&admin);
     fs::create_dir_all(checkout.join("target")).unwrap();
     fs::create_dir_all(&admin).unwrap();
     fs::write(

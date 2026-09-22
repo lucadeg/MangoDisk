@@ -8,6 +8,17 @@ use std::{
 
 use crate::{ControlledExecutable, DetectedTool};
 
+/// Resolves the fixed Git capability without triggering an application inventory scan.
+/// Callers still use isolated, bounded commands and revalidate executable identity at launch.
+pub fn detect_git_executable() -> Option<ControlledExecutable> {
+    let name = if cfg!(windows) { "git.exe" } else { "git" };
+    detect_tools(&[name])
+        .0
+        .into_iter()
+        .next()
+        .map(|tool| tool.executable)
+}
+
 /// Tool probes inspect controlled names without executing third-party programs. The first real
 /// file on PATH provides capability evidence, avoiding one `which` or `where` subprocess for every
 /// npm, Cargo, or Docker rule.

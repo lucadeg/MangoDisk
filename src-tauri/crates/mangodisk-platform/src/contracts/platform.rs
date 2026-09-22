@@ -1,4 +1,5 @@
 use std::{
+    ffi::OsStr,
     fs,
     path::{Path, PathBuf},
 };
@@ -331,11 +332,17 @@ pub trait Platform: Send + Sync {
     /// links. The project-artifact domain counts each link's own metadata as one entry but never
     /// follows its target. Keeping this as a separate capability prevents the ordinary cleanup
     /// aggregate from silently changing its stricter link-rejection semantics.
+    ///
+    /// `flag_entry_name` is inspected for every traversed entry name during the same traversal
+    /// and the first match is returned as `DirectoryTreeAggregate::flagged_entry`, so callers can
+    /// detect authored content (repository metadata, program keypairs) without a second walk.
+    /// Implementations must check names even when entry metadata is unavailable or unsupported.
     fn fast_project_artifact_tree_aggregate(
         &self,
         _root: &Path,
         _is_cancelled: &(dyn Fn() -> bool + Sync),
         _report_progress: &(dyn Fn(&Path, u64, u64) + Sync),
+        _flag_entry_name: fn(&OsStr) -> bool,
     ) -> Result<Option<DirectoryTreeAggregate>, DirectoryTreeAggregateError> {
         Ok(None)
     }

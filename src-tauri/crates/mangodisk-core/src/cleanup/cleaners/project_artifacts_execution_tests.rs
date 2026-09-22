@@ -52,6 +52,7 @@ impl WorktreeFixture {
                 ],
             );
         } else {
+            super::tests::initialize_git_admin(&admin);
             fs::create_dir_all(&checkout).unwrap();
             fs::create_dir_all(&admin).unwrap();
             write_project(&checkout);

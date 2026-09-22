@@ -26,6 +26,7 @@
             affected_item_count: 0,
             failed_item_count: 0,
             removed_empty_directory_count: 0,
+            logged_failure_count: 0,
         };
 
         delete_root_contents(
@@ -1153,6 +1154,7 @@
             affected_item_count: 0,
             failed_item_count: 0,
             removed_empty_directory_count: 0,
+            logged_failure_count: 0,
         };
 
         delete_root_contents(

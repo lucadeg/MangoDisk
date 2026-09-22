@@ -129,7 +129,8 @@ pub(super) fn helper_change_many(
 ) -> Vec<PlatformResult<PlatformStartupChangeResult>> {
     let cancellation = PlatformCancellation::new(|| false);
     let bundle_index = bundle_index::BundleIndex::discover();
-    let results = launchd::scan_with_bundle_index(&cancellation, &bundle_index);
+    let results =
+        launchd::scan_with_user_context(&cancellation, &bundle_index, Some(interactive_user_id));
     requests
         .iter()
         .map(|request| {

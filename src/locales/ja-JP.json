@@ -2939,7 +2939,7 @@
       },
       "app.wechat-diagnostic-cache": {
         "name": "WeChat のログと一時キャッシュ",
-        "description": "Weixin と WeChat が生成する診断ログと一時的な画面表示データ。",
+        "description": "WeChat が生成する診断ログと一時的な表示データ。macOS では 7 日以上更新されていないログファイルのみ削除します。",
         "impact": "メッセージ、アカウント、プラグイン、ユーザーファイルは保持されます。クリーンアップ前に WeChat を終了してください。"
       },
       "browser.chrome-cache": {

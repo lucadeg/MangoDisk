@@ -46,4 +46,5 @@ mod macos_cleanup_tests {
     include!("macos/productivity_caches.rs");
     include!("macos/browser_caches.rs");
     include!("macos/tree_helpers.rs");
+    include!("macos/reference_expansion.rs");
 }

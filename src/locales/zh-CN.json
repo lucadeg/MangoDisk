@@ -2939,7 +2939,7 @@
       },
       "app.wechat-diagnostic-cache": {
         "name": "微信日志与临时缓存",
-        "description": "微信和 WeChat 生成的诊断日志与少量临时显示数据",
+        "description": "微信生成的诊断日志与临时显示数据；macOS 仅清理超过 7 天的日志文件",
         "impact": "不会删除消息、账号、插件或用户文件；关闭微信后清理。"
       },
       "browser.chrome-cache": {

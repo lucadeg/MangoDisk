@@ -15,7 +15,7 @@ mod system_settings;
 mod volumes;
 
 use std::{
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     fs,
     io::{BufRead, BufReader, Read},
     os::macos::fs::MetadataExt as MacOsMetadataExt,
@@ -394,8 +394,15 @@ impl Platform for MacOsPlatform {
         root: &Path,
         is_cancelled: &(dyn Fn() -> bool + Sync),
         report_progress: &(dyn Fn(&Path, u64, u64) + Sync),
+        flag_entry_name: fn(&OsStr) -> bool,
     ) -> Result<Option<DirectoryTreeAggregate>, DirectoryTreeAggregateError> {
-        directory_aggregate::measure_project_artifact(root, is_cancelled, report_progress).map(Some)
+        directory_aggregate::measure_project_artifact(
+            root,
+            is_cancelled,
+            report_progress,
+            flag_entry_name,
+        )
+        .map(Some)
     }
 
     fn fast_application_component_aggregate(

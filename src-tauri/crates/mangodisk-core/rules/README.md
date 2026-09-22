@@ -194,6 +194,17 @@ Project artifact constraints are intentionally narrow:
 - Artifact paths must be normalized relative paths without absolute roots, `.` segments, or `..` traversal.
 - Verification lifecycle must be `verified`, evidence must contain at least one authoritative HTTPS source, and `verified_at` must use `YYYY-MM-DD`.
 
+### Authored content protection
+
+Project artifact preview and final deletion preflight inspect the selected tree for nested
+`.git` entries and `*-keypair.json` files. An enclosing Git repository also requires a successful,
+isolated `git ls-files` probe confirming that the artifact contains no tracked files. Missing Git,
+unreadable entries, cancellation, or a five-second Git probe timeout prevents deletion. Entry-name
+inspection shares the bounded measurement traversal and has no independent wall-clock or entry
+limit. Protected or incomplete artifacts remain visible as limited sources; complete sibling
+projects stay independently selectable. This protects authored data such as Anchor program keys
+stored under `target/deploy`, including files introduced after preview.
+
 ### Codex worktree discovery
 
 Regular deep-cleanup scans also inspect `${CODEX_HOME}/worktrees` (or

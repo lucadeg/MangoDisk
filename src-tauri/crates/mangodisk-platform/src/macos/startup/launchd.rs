@@ -62,8 +62,18 @@ pub(super) fn scan_with_bundle_index(
     cancellation: &PlatformCancellation,
     bundle_index: &BundleIndex,
 ) -> Vec<PlatformStartupSourceResult> {
+    scan_with_user_context(cancellation, bundle_index, None)
+}
+
+/// Elevated helpers must inspect the requesting user's GUI domain, not root's domain.
+/// Otherwise an unavailable gui/0 snapshot changes the authorization digest.
+pub(super) fn scan_with_user_context(
+    cancellation: &PlatformCancellation,
+    bundle_index: &BundleIndex,
+    interactive_user_id: Option<u32>,
+) -> Vec<PlatformStartupSourceResult> {
     let sources = launchd_sources();
-    let gui_overrides = disabled_overrides(LaunchdDomain::Gui, None);
+    let gui_overrides = disabled_overrides(LaunchdDomain::Gui, interactive_user_id);
     let system_overrides = disabled_overrides(LaunchdDomain::System, None);
 
     sources
@@ -873,17 +883,21 @@ fn target_kind(path: Option<&Path>) -> PlatformStartupTargetKind {
     }
 }
 
-fn disabled_overrides(
-    domain: LaunchdDomain,
-    interactive_user_id: Option<u32>,
-) -> Option<BTreeMap<String, bool>> {
-    let target = match domain {
+fn launchd_domain_target(domain: LaunchdDomain, interactive_user_id: Option<u32>) -> String {
+    match domain {
         LaunchdDomain::Gui => format!(
             "gui/{}",
             interactive_user_id.unwrap_or_else(|| unsafe { libc::geteuid() })
         ),
         LaunchdDomain::System => "system".to_owned(),
-    };
+    }
+}
+
+fn disabled_overrides(
+    domain: LaunchdDomain,
+    interactive_user_id: Option<u32>,
+) -> Option<BTreeMap<String, bool>> {
+    let target = launchd_domain_target(domain, interactive_user_id);
     let output = Command::new("/bin/launchctl")
         .args(["print-disabled", &target])
         .output()
@@ -893,6 +907,18 @@ fn disabled_overrides(
     }
     let text = String::from_utf8(output.stdout).ok()?;
     Some(parse_disabled_overrides(&text))
+}
+
+#[test]
+fn elevated_snapshot_uses_requesting_user_domain() {
+    assert_eq!(
+        launchd_domain_target(LaunchdDomain::Gui, Some(501)),
+        "gui/501"
+    );
+    assert_eq!(
+        launchd_domain_target(LaunchdDomain::System, Some(501)),
+        "system"
+    );
 }
 
 fn parse_disabled_overrides(text: &str) -> BTreeMap<String, bool> {

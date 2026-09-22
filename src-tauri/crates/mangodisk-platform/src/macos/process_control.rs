@@ -139,11 +139,9 @@ fn validate_target(target: &ApplicationProcessTarget) -> PlatformResult<()> {
 }
 
 fn request_close(process: &ProcessInstance, mode: ApplicationProcessCloseMode) -> bool {
-    if process.pid <= 0
-        || process.pid == std::process::id() as i32
-        || current_executable_path(process.pid)
-            .is_none_or(|path| normalize_path(&path) != normalize_path(&process.executable_path))
-    {
+    if !can_signal_process(process) {
+        log::warn!("macos_process_close_skipped pid={} path={} mode={mode:?} reason=identity_unavailable_or_changed",
+            process.pid, crate::diagnostics::text(&process.executable_path.display()));
         return false;
     }
 
@@ -152,21 +150,42 @@ fn request_close(process: &ProcessInstance, mode: ApplicationProcessCloseMode) -
             NSRunningApplication::runningApplicationWithProcessIdentifier(process.pid)
                 .filter(|application| application.bundleURL().is_some())
         {
-            return match mode {
+            let accepted = match mode {
                 ApplicationProcessCloseMode::Graceful => application.terminate(),
                 ApplicationProcessCloseMode::Force => application.forceTerminate(),
             };
+            log::info!("macos_process_close_requested pid={} path={} mode={mode:?} method=appkit accepted={accepted}",
+                process.pid, crate::diagnostics::text(&process.executable_path.display()));
+            if accepted || mode == ApplicationProcessCloseMode::Graceful {
+                return accepted;
+            }
+            // Only an explicit force-close request may bypass an AppKit refusal.
+            // Recheck the live executable before signaling to retain the PID reuse guard.
+            if !can_signal_process(process) {
+                return false;
+            }
         }
-
-        // LaunchServices does not track helper and command-line processes.
-        // SIGTERM gives those processes a normal cleanup opportunity, while
-        // SIGKILL is reserved for the user's explicit force-close retry.
         let signal = match mode {
             ApplicationProcessCloseMode::Graceful => libc::SIGTERM,
             ApplicationProcessCloseMode::Force => libc::SIGKILL,
         };
-        unsafe { libc::kill(process.pid, signal) == 0 }
+        let accepted = unsafe { libc::kill(process.pid, signal) == 0 };
+        let error = if accepted {
+            None
+        } else {
+            Some(std::io::Error::last_os_error())
+        };
+        log::info!("macos_process_close_requested pid={} path={} mode={mode:?} method=signal signal={signal} accepted={accepted} error={}",
+            process.pid, crate::diagnostics::text(&process.executable_path.display()), crate::diagnostics::text(&format!("{error:?}")));
+        accepted
     })
+}
+
+fn can_signal_process(process: &ProcessInstance) -> bool {
+    process.pid > 0
+        && process.pid != std::process::id() as i32
+        && current_executable_path(process.pid)
+            .is_some_and(|path| normalize_path(&path) == normalize_path(&process.executable_path))
 }
 
 #[cfg(test)]
@@ -194,12 +213,30 @@ fn matching_processes_in_snapshot(
             process.pid != std::process::id() as i32
                 && if paths.is_empty() {
                     names.contains(&normalize_name(&process.display_name))
+                        || process_runs_inside_named_bundle(process, &names)
                 } else {
                     paths.iter().any(|path| process_matches_path(process, path))
                 }
         })
         .cloned()
         .collect()
+}
+
+/// macOS applications keep resident XPC services and helpers running under
+/// their own executable names inside the owning application bundle. The
+/// cleanup process guard attributes those processes to the bundle name, so
+/// the close target must apply the same rule; otherwise a rule can be blocked
+/// by a helper the close step reports as unmatched.
+fn process_runs_inside_named_bundle(process: &ProcessInstance, names: &HashSet<String>) -> bool {
+    process
+        .executable_path
+        .components()
+        .filter_map(|component| {
+            let component = component.as_os_str().to_string_lossy();
+            let bundle_name = component.strip_suffix(".app")?;
+            Some(normalize_name(bundle_name))
+        })
+        .any(|bundle_name| names.contains(&bundle_name))
 }
 
 fn snapshot_error_results(
@@ -332,6 +369,19 @@ mod tests {
     static PROCESS_CLOSE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
+    fn refuses_self_and_stale_executable_identity() {
+        let mut process = ProcessInstance {
+            pid: std::process::id() as i32,
+            executable_path: std::env::current_exe().unwrap(),
+            display_name: "test".to_owned(),
+        };
+        assert!(!can_signal_process(&process));
+        process.pid = unsafe { libc::getppid() };
+        process.executable_path = PathBuf::from("/nonexistent/changed-executable");
+        assert!(!can_signal_process(&process));
+    }
+
+    #[test]
     fn parses_process_paths_with_spaces() {
         let process =
             parse_process_line("  42 /Applications/WPS Office.app/Contents/MacOS/wpsoffice")
@@ -368,6 +418,47 @@ mod tests {
         };
 
         assert!(matching_processes_in_snapshot(&target, &snapshot).is_empty());
+    }
+
+    #[test]
+    fn name_target_matches_bundle_contained_helpers() {
+        let snapshot = vec![ProcessInstance {
+            pid: 42,
+            executable_path: PathBuf::from(
+                "/System/Applications/Podcasts.app/Contents/XPCServices/PodcastSync.xpc/Contents/MacOS/PodcastSync",
+            ),
+            display_name: "PodcastSync".to_string(),
+        }];
+        let target = ApplicationProcessTarget {
+            executable_names: vec!["Podcasts".to_string()],
+            executable_paths: Vec::new(),
+        };
+
+        assert_eq!(
+            matching_processes_in_snapshot(&target, &snapshot).len(),
+            1,
+            "a helper inside the named bundle must match the close target exactly as the cleanup guard counts it as running"
+        );
+    }
+
+    #[test]
+    fn name_target_ignores_unrelated_bundle_suffixes() {
+        let snapshot = vec![ProcessInstance {
+            pid: 42,
+            executable_path: PathBuf::from(
+                "/Applications/Podcasts Utility.app/Contents/MacOS/Podcasts Utility",
+            ),
+            display_name: "Podcasts Utility".to_string(),
+        }];
+        let target = ApplicationProcessTarget {
+            executable_names: vec!["Podcasts".to_string()],
+            executable_paths: Vec::new(),
+        };
+
+        assert!(
+            matching_processes_in_snapshot(&target, &snapshot).is_empty(),
+            "only an exact bundle-name match may attribute a helper to the target application"
+        );
     }
 
     #[test]

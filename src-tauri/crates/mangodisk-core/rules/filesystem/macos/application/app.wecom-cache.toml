@@ -3,13 +3,13 @@
 # and the standard bundle cache are treated as rebuildable.
 id = "app.wecom-cache"
 schema_version = 3
-rule_version = 2
+rule_version = 3
 platform = "macos"
 category = "application"
 risk = "safe"
 default_selected = false
 recommended_selected = true
-required_stopped_processes = ["WeCom", "WXWork", "企业微信"]
+required_stopped_processes = ["WeCom", "WXWork", "企业微信", "WeComAgent", "wecom-agent"]
 
 [[applicability]]
 kind = "anyOf"
@@ -59,13 +59,14 @@ template = "${user_library}/Containers/com.tencent.WeWorkMac/Data/Documents/cefc
 [[roots]]
 template = "${user_library}/Containers/com.tencent.WeWorkMac/Data/Documents/cefcache/component_crx_cache"
 
-# Direct account-scoped CEF profiles use a dynamic name. Appending only fixed
+# CEF profiles use Default or a dynamic account name. Appending only fixed
 # cache suffixes keeps their cookies, history, IndexedDB, storage, and Service
 # Worker registration/script state outside the cleanup boundary.
 [[roots]]
 template = "${user_library}/Containers/com.tencent.WeWorkMac/Data/Documents/cefcache"
 kind = "childDirectories"
 child_prefixes = ["wew_"]
+child_names = ["Default"]
 suffixes = ["Cache", "Code Cache", "GPUCache", "DawnCache", "DawnGraphiteCache", "DawnWebGPUCache", "GrShaderCache", "GraphiteDawnCache", "Shared Dictionary/cache", "Service Worker/CacheStorage"]
 
 [matcher]
@@ -77,8 +78,8 @@ requires_app_close = true
 
 [verification]
 lifecycle = "verified"
-evidence = "Mac App Store WeCom 5.0.0 reproduced global and account-scoped CEF caches. Fixed leaves exclude Profiles, messages, downloads, mail, documents, cookies, history, databases, Local Storage and Service Worker state"
-verified_at = "2026-08-11"
+evidence = "WeCom 5.0.0 verified global/account CEF caches; signed 5.0.11 verified Default caches. Real cleanup preserved profile/configuration hashes and app restart. Only fixed cache leaves are included; messages, cookies, databases and storage remain excluded"
+verified_at = "2026-09-19"
 verified_platform = "macos"
 references = [
   "https://apps.apple.com/app/id1189898970?mt=12",

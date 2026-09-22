@@ -1,4 +1,5 @@
 use std::{
+    ffi::OsStr,
     fs, io,
     os::macos::fs::MetadataExt as MacOsMetadataExt,
     os::unix::fs::MetadataExt,
@@ -57,6 +58,7 @@ struct DirectoryReadResult {
     child_directories: Vec<PathBuf>,
     remote_file_count: u64,
     remote_directory_count: u64,
+    first_flagged_entry: Option<String>,
 }
 
 #[derive(Default)]
@@ -113,6 +115,7 @@ fn measure(
     policy: AggregatePolicy,
     is_cancelled: &(dyn Fn() -> bool + Sync),
     report_progress: &(dyn Fn(&Path, u64, u64) + Sync),
+    flag_entry_name: fn(&OsStr) -> bool,
 ) -> Result<DirectoryTreeAggregate, DirectoryTreeAggregateError> {
     check_cancelled(is_cancelled)?;
     let root_metadata = fs::symlink_metadata(root)
@@ -152,8 +155,14 @@ fn measure(
                     if worker_abort.load(Ordering::Relaxed) {
                         break;
                     }
-                    let result =
-                        read_directory(root_device, task, policy, &worker_abort, &mut buffer);
+                    let result = read_directory(
+                        root_device,
+                        task,
+                        policy,
+                        flag_entry_name,
+                        &worker_abort,
+                        &mut buffer,
+                    );
                     if result_sender.send(result).is_err() {
                         break;
                     }
@@ -181,6 +190,7 @@ fn measure(
     let mut first_unsupported_entry = None;
     let mut remote_file_count = 0_u64;
     let mut remote_directory_count = 0_u64;
+    let mut flagged_entry = None;
     let mut outstanding_tasks = 1_usize;
     let mut progress = DirectoryAggregateProgress::new(report_progress);
     task_queue.push_many([DirectoryTask {
@@ -236,6 +246,12 @@ fn measure(
         remote_file_count = remote_file_count.saturating_add(result.remote_file_count);
         remote_directory_count =
             remote_directory_count.saturating_add(result.remote_directory_count);
+        // Worker results arrive in completion order, so a concurrent match may
+        // win over an earlier directory's match. Any single flagged entry is
+        // sufficient for the caller's fail-closed decision.
+        if flagged_entry.is_none() {
+            flagged_entry = result.first_flagged_entry;
+        }
 
         let mut child_tasks = Vec::with_capacity(result.child_directories.len());
         for path in result.child_directories {
@@ -301,6 +317,7 @@ fn measure(
         skipped_count,
         sources,
         strategy: "darwin-parallel-getattrlistbulk-resident-files-v4",
+        flagged_entry,
     })
 }
 
@@ -314,6 +331,7 @@ pub(super) fn measure_cleanup(
         AggregatePolicy::Cleanup,
         is_cancelled,
         report_progress,
+        |_| false,
     )
 }
 
@@ -321,12 +339,14 @@ pub(super) fn measure_project_artifact(
     root: &Path,
     is_cancelled: &(dyn Fn() -> bool + Sync),
     report_progress: &(dyn Fn(&Path, u64, u64) + Sync),
+    flag_entry_name: fn(&OsStr) -> bool,
 ) -> Result<DirectoryTreeAggregate, DirectoryTreeAggregateError> {
     measure(
         root,
         AggregatePolicy::ProjectArtifact,
         is_cancelled,
         report_progress,
+        flag_entry_name,
     )
 }
 
@@ -343,6 +363,7 @@ pub(super) fn measure_application_component(
         AggregatePolicy::ApplicationComponent,
         is_cancelled,
         report_progress,
+        |_| false,
     )
     .map(|aggregate| ApplicationComponentAggregate {
         bytes: aggregate.bytes,
@@ -362,6 +383,7 @@ fn read_directory(
     root_device: u64,
     task: DirectoryTask,
     policy: AggregatePolicy,
+    flag_entry_name: fn(&OsStr) -> bool,
     abort: &AtomicBool,
     buffer: &mut AlignedBuffer,
 ) -> Result<DirectoryReadResult, DirectoryTreeAggregateError> {
@@ -384,6 +406,7 @@ fn read_directory(
                 child_directories: Vec::new(),
                 remote_file_count: 0,
                 remote_directory_count: 0,
+                first_flagged_entry: None,
             });
         }
         Err(error) => return Err(platform_error("open directory aggregate root", &error)),
@@ -399,6 +422,7 @@ fn read_directory(
         child_directories: Vec::new(),
         remote_file_count: 0,
         remote_directory_count: 0,
+        first_flagged_entry: None,
     };
     loop {
         check_aborted(abort)?;
@@ -410,7 +434,7 @@ fn read_directory(
         }
         for entry in entries {
             check_aborted(abort)?;
-            collect_entry(root_device, policy, entry, &mut result);
+            collect_entry(root_device, policy, flag_entry_name, entry, &mut result);
         }
     }
     Ok(result)
@@ -419,10 +443,21 @@ fn read_directory(
 fn collect_entry(
     root_device: u64,
     policy: AggregatePolicy,
+    flag_entry_name: fn(&OsStr) -> bool,
     entry: BulkDirectoryEntry,
     result: &mut DirectoryReadResult,
 ) {
-    if entry.attribute_error != 0 || entry.name.as_encoded_bytes().is_empty() {
+    if entry.name.as_encoded_bytes().is_empty() {
+        result.skipped_count = result.skipped_count.saturating_add(1);
+        return;
+    }
+    // The name check runs before the attribute-error return so an authored
+    // entry with unreadable metadata is still flagged; the caller's fail-closed
+    // decision only needs the name.
+    if flag_entry_name(&entry.name) && result.first_flagged_entry.is_none() {
+        result.first_flagged_entry = Some(entry.name.to_string_lossy().into_owned());
+    }
+    if entry.attribute_error != 0 {
         result.skipped_count = result.skipped_count.saturating_add(1);
         return;
     }
@@ -591,6 +626,7 @@ mod tests {
             child_directories: Vec::new(),
             remote_file_count: 0,
             remote_directory_count: 0,
+            first_flagged_entry: None,
         };
         let entry = BulkDirectoryEntry {
             name: "remote-directory".into(),
@@ -605,7 +641,7 @@ mod tests {
             record_length: 64,
         };
 
-        collect_entry(7, AggregatePolicy::Cleanup, entry, &mut result);
+        collect_entry(7, AggregatePolicy::Cleanup, |_| false, entry, &mut result);
 
         assert!(result.child_directories.is_empty());
         assert_eq!(result.skipped_count, 1);
@@ -663,12 +699,30 @@ mod tests {
             .expect("link metadata must be readable")
             .len();
 
-        let aggregate = measure_project_artifact(&root, &|| false, &|_, _, _| {})
+        let aggregate = measure_project_artifact(&root, &|| false, &|_, _, _| {}, |_| false)
             .expect("native aggregate must succeed");
 
         assert_eq!(aggregate.bytes, 7 + link_bytes);
         assert_eq!(aggregate.file_count, 2);
         assert_eq!(aggregate.skipped_count, 0);
+    }
+
+    #[test]
+    fn project_artifact_aggregate_flags_authored_entries_during_traversal() {
+        let (root, _cleanup) = fixture_root("project-flagged");
+        fs::create_dir_all(root.join("debug/.git")).expect("nested git fixture must be created");
+        fs::write(root.join("debug/.git/index"), [0_u8; 3])
+            .expect("nested git content must be created");
+        fs::write(root.join("debug.bin"), [0_u8; 4]).expect("fixture file must be written");
+
+        let flag = |name: &std::ffi::OsStr| name.as_encoded_bytes() == b".git";
+        let aggregate = measure_project_artifact(&root, &|| false, &|_, _, _| {}, flag)
+            .expect("native aggregate must succeed");
+
+        assert_eq!(aggregate.flagged_entry.as_deref(), Some(".git"));
+        // Flagging must not prune the entry: limited preview still reports complete totals.
+        assert_eq!(aggregate.file_count, 2);
+        assert_eq!(aggregate.bytes, 7);
     }
 
     #[test]
@@ -726,6 +780,7 @@ mod tests {
                 is_root: true,
             },
             AggregatePolicy::ApplicationComponent,
+            |_| false,
             &AtomicBool::new(false),
             &mut AlignedBuffer::new(),
         )

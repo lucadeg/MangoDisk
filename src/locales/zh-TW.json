@@ -2939,7 +2939,7 @@
       },
       "app.wechat-diagnostic-cache": {
         "name": "WeChat 記錄檔與暫存快取",
-        "description": "Weixin 和 WeChat 產生的診斷記錄檔與少量暫存顯示資料",
+        "description": "WeChat 產生的診斷記錄檔與暫存顯示資料；macOS 僅清理超過 7 天的記錄檔",
         "impact": "不會刪除訊息、帳號、外掛程式或使用者檔案；請先關閉 WeChat 再清理。"
       },
       "browser.chrome-cache": {

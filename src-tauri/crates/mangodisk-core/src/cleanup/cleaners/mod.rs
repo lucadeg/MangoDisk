@@ -4,6 +4,7 @@ mod conda_cache;
 mod docker_build_cache;
 #[cfg(any(windows, target_os = "macos", test))]
 mod dropbox_cache;
+mod project_artifact_protection;
 mod project_artifact_schema;
 mod project_artifacts;
 mod project_root_index;

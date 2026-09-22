@@ -39,6 +39,7 @@ pub use file_icon::{
     NativeFileIconAsset, NativeFileIconAssignment, NativeFileIconItemKind,
     NativeFileIconLoadResult, NativeFileIconMode, NativeFileIconRequest, NativeFileIconService,
 };
+pub use inventory::detect_git_executable;
 #[cfg(target_os = "macos")]
 pub use macos::{
     macos_privileged_application_removal_supported, remove_application_bundle_with_privileges,
