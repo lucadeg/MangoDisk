@@ -69,6 +69,19 @@ export const useAppStore = defineStore('app', {
       const index = this.disks.findIndex(item => item.mountPoint === disk.mountPoint);
       if (index >= 0) this.disks[index] = disk;
     },
+    async refreshDisks(): Promise<boolean> {
+      try {
+        const [disk, disks] = await Promise.all([DiskService.getSystemDisk(), DiskService.listDisks()]);
+        this.disk = disk;
+        this.disks = disks;
+        return true;
+      } catch (error) {
+        LoggerService.warn(LOG_DOMAINS.applicationShell, LOG_EVENTS.diskRefreshFailed, {
+          code: parseCommandError(error)?.code ?? 'operationFailed',
+        });
+        return false;
+      }
+    },
     async refreshSystemDisk(): Promise<boolean> {
       try {
         this.updateSystemDisk(await DiskService.getSystemDisk());
