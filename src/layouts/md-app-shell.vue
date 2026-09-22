@@ -133,6 +133,7 @@ const UPDATE_CHECK_ERROR_TOAST_ID = 'app-update-check-error';
 const LARGE_FILE_DELETE_TOAST_ID = 'large-file-delete-result';
 const DUPLICATE_FILE_DELETE_TOAST_ID = 'duplicate-file-delete-result';
 const DEEP_CLEANUP_TOAST_ID = 'deep-cleanup-result';
+const SYSTEM_DISK_REFRESH_INTERVAL_MS = 5_000;
 const customCleanupRuleNames = computed<Record<string, string>>(() =>
   cleanupStore.scanScope.mode === CLEANUP_SCAN_SCOPE_MODES.custom
     ? Object.fromEntries(cleanupStore.scanScope.rules.map(rule => [`custom.${rule.id}`, rule.name]))
@@ -226,10 +227,27 @@ let unlistenResident: (() => void) | null = null;
 let unlistenOpenAbout: (() => void) | null = null;
 let shellMounted = true;
 let stopUpdateNotice: (() => void) | undefined;
+let systemDiskRefreshTimer: ReturnType<typeof globalThis.setInterval> | null = null;
+let systemDiskRefreshPending = false;
 
 function initializeDisks(): Promise<void> {
   diskInitialization ??= store.initialize().then(() => storageScopeStore.initialize(store.disks));
   return diskInitialization;
+}
+
+async function refreshSystemDiskTelemetry() {
+  if (!shellMounted || document.hidden || systemDiskRefreshPending) return;
+  systemDiskRefreshPending = true;
+  try {
+    await store.refreshSystemDisk();
+  } finally {
+    systemDiskRefreshPending = false;
+  }
+}
+
+function refreshSystemDiskWhenVisible() {
+  if (document.hidden) return;
+  void refreshSystemDiskTelemetry();
 }
 
 function initializePageData(page: PageId): Promise<void> {
@@ -270,6 +288,12 @@ function toggleSidebar() {
 
 onMounted(() => {
   window.addEventListener('resize', syncSidebarExpansion);
+  window.addEventListener('focus', refreshSystemDiskWhenVisible);
+  document.addEventListener('visibilitychange', refreshSystemDiskWhenVisible);
+  systemDiskRefreshTimer = globalThis.setInterval(
+    () => void refreshSystemDiskTelemetry(),
+    SYSTEM_DISK_REFRESH_INTERVAL_MS
+  );
   syncSidebarExpansion();
   cleanupStore.initialize();
   preloadFeaturePages();
@@ -337,6 +361,10 @@ async function connectWindowNavigation() {
 onBeforeUnmount(() => {
   shellMounted = false;
   window.removeEventListener('resize', syncSidebarExpansion);
+  window.removeEventListener('focus', refreshSystemDiskWhenVisible);
+  document.removeEventListener('visibilitychange', refreshSystemDiskWhenVisible);
+  if (systemDiskRefreshTimer !== null) globalThis.clearInterval(systemDiskRefreshTimer);
+  systemDiskRefreshTimer = null;
   stopUpdateNotice?.();
   unlistenOpenAbout?.();
   unlistenResident?.();
