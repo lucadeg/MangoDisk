@@ -226,6 +226,9 @@ let unlistenResident: (() => void) | null = null;
 let unlistenOpenAbout: (() => void) | null = null;
 let shellMounted = true;
 let stopUpdateNotice: (() => void) | undefined;
+const DISK_REFRESH_INTERVAL_MS = 2_000;
+let diskRefreshTimer: ReturnType<typeof globalThis.setInterval> | null = null;
+let diskRefreshInFlight: Promise<void> | null = null;
 
 function initializeDisks(): Promise<void> {
   diskInitialization ??= store.initialize().then(() => storageScopeStore.initialize(store.disks));
@@ -268,11 +271,31 @@ function toggleSidebar() {
   sidebarLayout.value = toggleSidebarLayout(sidebarLayout.value);
 }
 
+function refreshVisibleDisks() {
+  if (!shellMounted || document.visibilityState !== 'visible' || diskRefreshInFlight) return;
+  diskRefreshInFlight = initializeDisks()
+    .then(async () => {
+      await store.refreshDisks();
+    })
+    .catch(error => store.reportError(error))
+    .finally(() => {
+      diskRefreshInFlight = null;
+    });
+}
+
+function handleDiskVisibilityChange() {
+  if (document.visibilityState === 'visible') refreshVisibleDisks();
+}
+
 onMounted(() => {
   window.addEventListener('resize', syncSidebarExpansion);
+  window.addEventListener('focus', refreshVisibleDisks);
+  document.addEventListener('visibilitychange', handleDiskVisibilityChange);
+  diskRefreshTimer = globalThis.setInterval(refreshVisibleDisks, DISK_REFRESH_INTERVAL_MS);
   syncSidebarExpansion();
   cleanupStore.initialize();
   preloadFeaturePages();
+  refreshVisibleDisks();
   void appUpdateStore.initialize();
   // Every window reads the same native result. Acquiring a download handle
   // from a completed check does not issue another network request.
@@ -337,6 +360,12 @@ async function connectWindowNavigation() {
 onBeforeUnmount(() => {
   shellMounted = false;
   window.removeEventListener('resize', syncSidebarExpansion);
+  window.removeEventListener('focus', refreshVisibleDisks);
+  document.removeEventListener('visibilitychange', handleDiskVisibilityChange);
+  if (diskRefreshTimer !== null) {
+    globalThis.clearInterval(diskRefreshTimer);
+    diskRefreshTimer = null;
+  }
   stopUpdateNotice?.();
   unlistenOpenAbout?.();
   unlistenResident?.();
